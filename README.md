@@ -1,61 +1,59 @@
 # CPA Image MCP
 
-**简体中文** | [English](README.en.md)
+**English** | [简体中文](README.zh-CN.md)
 
-把已运行的 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 图片接口包装成远程 MCP 服务，让 Claude 等云端客户端生成、编辑和下载原图。
+A remote MCP wrapper for an existing [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) image endpoint. It lets Claude and other cloud-based MCP clients generate, edit, and download full-resolution images, with reusable signed download links and automatic retention cleanup.
 
-Remote MCP wrapper for your own CLIProxyAPI image endpoint: generation, editing, full-resolution image content, reusable signed downloads, and automatic retention cleanup.
+All examples use `images.example.com`. Replace it with your own domain when deploying. This repository contains no real account credentials, deployment domains, images, logs, or environment files.
 
-所有示例均使用 `images.example.com`。部署时请换成自己的域名；仓库不包含真实账号凭据、部署域名、图片、日志或环境文件。
+## Features
 
-## 能做什么
-
-| 工具 | 用途 |
+| Tool | Purpose |
 | --- | --- |
-| `generate_image` | 生图，返回图片 ID、请求/实际尺寸及 512px 预览 |
-| `edit_image` | 按图片 ID 编辑，保留原图，生成新 ID |
-| `get_image` | 返回全尺寸 MCP ImageContent/base64，可等比例缩小或转 JPEG |
-| `list_images` | 列出仍在保留期内的图片及今日用量 |
+| `generate_image` | Generate an image and return its ID, requested/actual dimensions, and a 512px preview |
+| `edit_image` | Edit an image by ID, preserving the original and creating a new ID |
+| `get_image` | Return full-resolution MCP ImageContent/base64, optionally resizing proportionally or converting to JPEG |
+| `list_images` | List images still within their retention period and today's usage |
 
-四个工具都附带 `download_url` 和 `download_expires_at`。下载链接无需 API 请求头，默认有效 72 小时，可重复下载。原图默认保留 3 天，服务启动时及每小时清理一次。
+All four tools include `download_url` and `download_expires_at` in their results. Download links require no API request headers, remain valid for 72 hours by default, and can be reused. Original images are retained for 3 days by default, with cleanup at startup and every hour.
 
-**注意 `get_image` 的删除默认值：** `delete_after_return=True` 会在原尺寸图片的 HTTP 响应完整发送后删除服务器原图，下载链接随之失效。需要链接继续可用、继续编辑或同步时，传 `delete_after_return=False`。缩略图和普通链接下载不会触发这项删除。
+**Note the deletion default for `get_image`:** `delete_after_return=True` deletes the original image from the server after the HTTP response containing the image at its original dimensions has been fully sent. Its download links then stop working. Pass `delete_after_return=False` to keep the links usable or to continue editing or syncing the image. Thumbnails and ordinary link downloads do not trigger this deletion.
 
-## 原理
+## How it works
 
 ```mermaid
 flowchart LR
-  Claude[Claude / MCP 客户端] -->|HTTPS + Authorization| Tunnel[Cloudflare Tunnel]
+  Claude[Claude / MCP client] -->|HTTPS + Authorization| Tunnel[Cloudflare Tunnel]
   Tunnel -->|HTTP 127.0.0.1:8787| MCP[CPA Image MCP]
-  MCP -->|本机 API key| CPA[CLIProxyAPI /v1/images]
+  MCP -->|Local API key| CPA[CLIProxyAPI /v1/images]
   CPA --> MCP
-  MCP --> Store[原图 + manifest]
-  Browser[浏览器 / 下载客户端] -->|HTTPS + 过期时间 + HMAC| Tunnel
-  MCP -->|签名校验后返回附件| Browser
+  MCP --> Store[Original images + manifest]
+  Browser[Browser / download client] -->|HTTPS + expiry + HMAC| Tunnel
+  MCP -->|Attachment after signature verification| Browser
 ```
 
-- MCP 只监听回环地址，不需要为 NAT VPS 增加公网端口。
-- MCP 到 CPA 默认走 `http://127.0.0.1:8317/v1`；生图等待期间发送 MCP 心跳。
-- 生图/编辑的预览保持小体积；原图单独以 MCP 图片内容或 HTTPS 附件传输。
-- HMAC 使用独立随机密钥，绑定图片 ID、相对路径和截止时间。URL 不含 CPA key 或 MCP token。
-- `size` 按宽×高传递，同时补充尺寸、方向和纵横比提示词；返回尺寸按实际图片字节解码。若上游没有遵守尺寸，明确提示，保留上游原图。
+- The MCP service listens only on the loopback address. No additional public port is needed on a NAT VPS.
+- MCP connects to CPA at `http://127.0.0.1:8317/v1` by default and sends MCP heartbeats while waiting for image generation.
+- Generation and editing return small previews. Original images are transferred separately as MCP image content or HTTPS attachments.
+- HMAC uses an independent random key and binds the image ID, relative path, and expiry time. URLs contain neither the CPA API key nor the MCP token.
+- `size` is passed as width × height, with additional prompt guidance for dimensions, orientation, and aspect ratio. Returned dimensions are decoded from the actual image bytes. If the upstream service does not honor the requested dimensions, the result explicitly reports the mismatch and preserves the upstream image.
 
-这个项目不负责部署、登录或修改 CPA，也不提供账号。你需要自己的 CPA 实例及其已授权、能正常使用的图片后端。已验证组合包括 Debian 12、Python 3.11、CLIProxyAPI 8.0.30、MCP Python SDK 1.30.0；其他后端需确认图片接口和模型兼容性。
+This project does not deploy, sign in to, or modify CPA, and does not provide accounts. You need your own CPA instance with an authorized, working image backend. The verified setup includes Debian 12, Python 3.11, CLIProxyAPI 8.0.30, and MCP Python SDK 1.30.0. For other backends, check image endpoint and model compatibility.
 
-## 1. 准备 VPS 与 CPA
+## 1. Prepare your VPS and CPA
 
-安装器适用于 **systemd + Python 3.10+ 的 Linux**。Alpine/OpenRC 会明确停止，不会自动改写服务方案。先准备 Python venv/ensurepip；安装器不自动升级系统软件包。
+The installer supports **Linux with systemd and Python 3.10+**. It stops explicitly on Alpine/OpenRC rather than automatically switching service managers. Make sure Python venv/ensurepip is available first; the installer does not automatically upgrade system packages.
 
-Debian/Ubuntu 可先执行：
+On Debian/Ubuntu, install the prerequisites:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y python3 python3-venv ca-certificates curl git
 ```
 
-确认 CPA 的 `/v1/images/generations` 和 `/v1/images/edits` 可用，且支持配置的模型。服务只向这些接口发请求，不读取或改写 CPA 的配置/账号文件。
+Confirm that CPA's `/v1/images/generations` and `/v1/images/edits` endpoints work and support your configured model. This service only sends requests to those endpoints; it does not read or modify CPA's configuration or account files.
 
-## 2. 安装服务
+## 2. Install the service
 
 ```bash
 git clone https://github.com/Bing2000me/cpa-image-mcp.git
@@ -63,15 +61,15 @@ cd cpa-image-mcp
 sudo bash install.sh
 ```
 
-首次运行仅创建 `/etc/cpa-image-mcp.env`（0600），自动为 `MCP_TOKEN` 和 `DOWNLOAD_SIGNING_KEY` 分别生成随机密钥，不打印密钥，不安装用户、应用或服务。
+On the first run, the installer only creates `/etc/cpa-image-mcp.env` with permissions `0600` and generates separate random values for `MCP_TOKEN` and `DOWNLOAD_SIGNING_KEY`. It does not print the keys, create the service user, or install the application or service yet.
 
-在 VPS 本机编辑这个文件：
+Edit the file on the VPS:
 
 ```bash
 sudo nano /etc/cpa-image-mcp.env
 ```
 
-至少设置：
+Set at least:
 
 ```dotenv
 CPA_API_KEY=your-own-cpa-api-key
@@ -79,9 +77,9 @@ CPA_BASE=http://127.0.0.1:8317/v1
 PUBLIC_HOST=images.example.com
 ```
 
-替换示例域名，并保留自动生成的随机密钥。值若含空格、`#` 或其他特殊字符，请使用引号。`MCP_SECRET` 默认留空，使用请求头鉴权。
+Replace the example domain and keep the automatically generated random keys. Quote values containing spaces, `#`, or other special characters. Leave `MCP_SECRET` empty to use request-header authentication.
 
-再次执行：
+Run the installer again, then check the service:
 
 ```bash
 sudo bash install.sh
@@ -89,127 +87,127 @@ systemctl is-active cpa-image-mcp
 curl http://127.0.0.1:8787/healthz
 ```
 
-预期分别为 `active` 和 `ok`。应用安装到 `/opt/cpa-image-mcp`，数据目录为 `/var/lib/cpa-image-mcp/images`，以独立 `cpaimg` 用户运行并开机启动。升级时备份已有代码、环境和 unit 文件到 `/var/backups/cpa-image-mcp/<UTC时间>/`；助手补配置前也会备份环境文件。升级不覆盖已有非空凭据。
+The expected outputs are `active` and `ok`, respectively. The application is installed at `/opt/cpa-image-mcp`, stores data in `/var/lib/cpa-image-mcp/images`, runs as the dedicated `cpaimg` user, and starts at boot. During upgrades, existing code, environment configuration, and the systemd unit are backed up to `/var/backups/cpa-image-mcp/<UTC-timestamp>/`. The configuration helper also backs up the environment file before filling in missing settings. Upgrades preserve existing non-empty credentials.
 
-## 3. 接入现有 HTTPS 隧道
+## 3. Connect your existing HTTPS tunnel
 
-在已有 Cloudflare Tunnel 新增一条 Public Hostname / 应用路由：
+Add a Public Hostname / application route to your existing Cloudflare Tunnel:
 
-| 字段 | 示例 |
+| Field | Example |
 | --- | --- |
-| Hostname | `images.example.com`，换成自己的域名 |
+| Hostname | `images.example.com` — replace with your own domain |
 | Service type | **HTTP** |
 | Service URL | `127.0.0.1:8787` |
 
-外部由 Cloudflare 提供 HTTPS，源站连接使用 HTTP。不要填 `https://127.0.0.1:8787`。保留已有路由，不改 CPA 或 VPN 的端口。
+Cloudflare provides HTTPS externally; the connection to the origin uses HTTP. Do not enter `https://127.0.0.1:8787`. Keep existing routes and leave CPA and VPN ports unchanged.
 
-若隧道由本地 YAML 管理，在兜底 404 之前增加：
+If you manage the tunnel with a local YAML file, add the route before the catch-all 404 rule:
 
 ```yaml
 ingress:
-  # 保留这里原有的路由。
+  # Keep your existing routes here.
   - hostname: images.example.com
     service: http://127.0.0.1:8787
   - service: http_status:404
 ```
 
-先备份配置，再按 [Cloudflare Tunnel 官方文档](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/)验证配置、绑定 DNS 并应用。安装脚本不会操作隧道、DNS 或防火墙。
+Back up the configuration first, then follow the [official Cloudflare Tunnel documentation](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/) to validate it, bind DNS, and apply the change. The installer does not modify tunnels, DNS, or firewall rules.
 
-从另一台设备检查：
+Check from another device:
 
 ```bash
 curl https://images.example.com/healthz
 curl -s -o /dev/null -w '%{http_code}\n' -X POST https://images.example.com/mcp
 ```
 
-预期为 `ok` 和 `401`。如果本机正常而公网返回 502，先核对源站的 HTTP 类型和地址。
+The expected outputs are `ok` and `401`. If the local check succeeds but the public endpoint returns 502, first verify the origin's HTTP service type and address.
 
-## 4. Claude 自定义连接器
+## 4. Set up a Claude custom connector
 
-| 项目 | 内容 |
+| Setting | Value |
 | --- | --- |
-| URL | `https://images.example.com/mcp`，替换为自己的域名 |
-| Authentication | **No sign-in**，本服务使用 API 请求头而不实现 OAuth |
+| URL | `https://images.example.com/mcp` — replace with your own domain |
+| Authentication | **No sign-in** — this service uses an API request header and does not implement OAuth |
 | Request header name | `Authorization` |
-| Request header value | `Bearer <MCP_TOKEN>`，Bearer 后有一个空格 |
+| Request header value | `Bearer <MCP_TOKEN>` — include one space after `Bearer` |
 
-在 VPS 本机读取环境文件中的 `MCP_TOKEN`，直接填入客户端的私有设置。`MCP_TOKEN` 是 MCP 自己的凭据，不是 `CPA_API_KEY`。连接后应看到四个工具。
+Read `MCP_TOKEN` from the environment file on the VPS and enter it directly into the client's private settings. `MCP_TOKEN` is the MCP service's credential, separate from `CPA_API_KEY`. After connecting, you should see four tools.
 
-示例请求：
-
-```json
-{"prompt":"水彩风格的黄昏灯塔","size":"1024x1536","quality":"low","name_hint":"灯塔"}
-```
-
-需要在链接有效期内反复下载时：
+Example request for `generate_image`:
 
 ```json
-{"image_id":"从生成结果取得的ID","delete_after_return":false}
+{"prompt":"A watercolor lighthouse at dusk","size":"1024x1536","quality":"low","name_hint":"lighthouse"}
 ```
 
-以上第二段用于 `get_image`。只想下载时，也可直接使用生成结果或 `list_images` 中的 `download_url`，无需再次调用 `get_image`。
+To keep the original available for repeated downloads during the link's validity period, call `get_image` with:
 
-## 配置项
+```json
+{"image_id":"ID-from-the-generation-result","delete_after_return":false}
+```
 
-完整模板见 [.env.example](.env.example)。真实环境文件必须保留在仓库之外。
+If you only want to download the image, you can use the `download_url` from the generation result or `list_images` directly, without calling `get_image` again.
 
-| 变量 | 默认值 | 用途 |
+## Configuration
+
+See [.env.example](.env.example) for the complete template. Keep real environment files outside the repository.
+
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `CPA_API_KEY` | 必填 | 自己的 CPA 接口凭据 |
-| `CPA_BASE` | `http://127.0.0.1:8317/v1` | 同机 CPA 基础地址，按实际端口修改 |
-| `IMAGE_MODEL` | `gpt-image-2` | 后端图片模型 |
-| `PUBLIC_HOST` | 需替换示例 | 公网 HTTPS 域名，不带协议/路径 |
-| `MCP_TOKEN` | 安装器随机生成 | 请求头鉴权，至少 24 位字母/数字/`_`/`-` |
-| `MCP_SECRET` | 空 | 可选的路径暗号，通常无需启用 |
-| `DOWNLOAD_SIGNING_KEY` | 安装器独立随机生成 | HMAC 签名密钥，至少 32 位；更换后旧链接失效 |
-| `DOWNLOAD_TTL_HOURS` | `72` | 链接有效期，正整数小时 |
-| `IMAGE_RETENTION_DAYS` | `3` | 图片保留期，正整数天 |
-| `DAILY_LIMIT` | `40` | 当日最大生图/编辑次数，删除图片不返还额度 |
-| `PREVIEW_PX` | `512` | 预览最长边 |
-| `PORT` | `8787` | 本机监听端口；修改时同步修改隧道源站 |
-| `TZ_NAME` | `Asia/Shanghai` | 日期分组和日额度时区 |
-| `IMAGE_DIR` | `/var/lib/cpa-image-mcp/images` | 数据目录，与 systemd StateDirectory 配合 |
+| `CPA_API_KEY` | Required | API credential for your own CPA instance |
+| `CPA_BASE` | `http://127.0.0.1:8317/v1` | Base URL of CPA on the same VPS; adjust the port as needed |
+| `IMAGE_MODEL` | `gpt-image-2` | Backend image model |
+| `PUBLIC_HOST` | Replace the example | Public HTTPS hostname, without a scheme or path |
+| `MCP_TOKEN` | Randomly generated by the installer | Request-header authentication; at least 24 characters using letters, digits, `_`, or `-` |
+| `MCP_SECRET` | Empty | Optional secret path segment; usually unnecessary |
+| `DOWNLOAD_SIGNING_KEY` | Independently generated by the installer | HMAC signing key, at least 32 characters; changing it invalidates existing links |
+| `DOWNLOAD_TTL_HOURS` | `72` | Link validity in hours; a positive integer |
+| `IMAGE_RETENTION_DAYS` | `3` | Image retention in days; a positive integer |
+| `DAILY_LIMIT` | `40` | Maximum daily generation/editing calls; deleting images does not restore quota |
+| `PREVIEW_PX` | `512` | Maximum preview side length |
+| `PORT` | `8787` | Local listening port; also update the tunnel origin if changed |
+| `TZ_NAME` | `Asia/Shanghai` | Time zone for date grouping and daily quota |
+| `IMAGE_DIR` | `/var/lib/cpa-image-mcp/images` | Data directory, used with systemd's StateDirectory |
 
-修改环境文件后执行 `sudo systemctl restart cpa-image-mcp`，不需要重启 CPA。
+After changing the environment file, run `sudo systemctl restart cpa-image-mcp`. CPA does not need to be restarted.
 
-## 链接、保留期与删除
+## Download links, retention, and deletion
 
-签名 URL 类似：
+A signed URL looks like this:
 
 ```text
-https://images.example.com/download/<image_id>?expires=<UNIX秒>&token=<HMAC签名>
+https://images.example.com/download/<image_id>?expires=<UNIX-seconds>&token=<HMAC-signature>
 ```
 
-- 同一链接可多次 GET 或 HEAD；下载本身不消耗生图额度，也不删除原图。
-- 实际到期时间取「当前时间 + 链接有效期」与「图片创建时间 + 保留期」中较早者。生成新链接不会延长图片保留期。
-- `download_expires_at` 使用带时区的 ISO 8601 UTC 时间。
-- 响应带真实图片 `Content-Type`、原文件名 `Content-Disposition: attachment` 和禁止缓存的响应头。
-- 坏签名、缺失或已删除原图返回 404；正确签名但链接/保留期已到返回 410。拿到链接的人可以下载，链接本身也应按临时凭据处理。
-- `get_image` 默认完整发送原尺寸图片的 HTTP 响应后删除原图；服务端无法确认客户端是否已另存。传 `delete_after_return=False` 可保留。缩小后的图片不会触发删除。
+- The same link supports repeated GET or HEAD requests. Downloading does not consume generation quota or delete the original image.
+- The effective expiry is the earlier of “current time + link validity” and “image creation time + retention period.” Issuing a new link does not extend image retention.
+- `download_expires_at` is a timezone-aware ISO 8601 UTC timestamp.
+- Responses include the image's actual `Content-Type`, `Content-Disposition: attachment` with the original filename, and headers that disable caching.
+- Invalid signatures and missing or deleted originals return 404. A valid signature with an expired link or retention period returns 410. Anyone with the link can download the image, so treat the link as a temporary credential.
+- By default, `get_image` deletes the original after the HTTP response containing the image at its original dimensions has been fully sent. The server cannot confirm whether the client saved it. Pass `delete_after_return=False` to retain it. Resized images do not trigger deletion.
 
-清理在启动和每小时运行，删除到期原图、关联缩略图及清单记录，也清理图片目录中过期的孤立图片。原图不存在时清理关联记录。过期/缺失项会即时从列表和同步清单隐藏，不必等下一轮物理清理。清理不会越过图片目录，也不删除用量文件。512px 预览在内存中生成，不额外落盘。
+Cleanup runs at startup and every hour. It removes expired originals, associated thumbnails, and manifest entries, as well as expired orphaned images in the image directory. It also removes associated records when an original is missing. Expired or missing entries are hidden from image lists and sync manifests immediately, without waiting for the next physical cleanup. Cleanup stays within the image directory and does not delete usage files. The 512px previews are generated in memory without extra files on disk.
 
-## 可选：同步原图到本机
+## Optional: sync original images to your computer
 
-`sync_images.py` 只下载本地尚不存在的原图。保留在服务器上的图片才可同步；已经被 `get_image` 删除的图片无法再次同步。
+`sync_images.py` downloads only originals that are not already present locally. Only images still retained on the server can be synced; images already deleted by `get_image` cannot be synced again.
 
-在本机的私有环境配置中设置：
+Set these variables in your computer's private environment configuration:
 
 ```bash
 export CPA_IMG_BASE="https://images.example.com"
-export CPA_IMG_TOKEN="<自己的MCP_TOKEN>"
+export CPA_IMG_TOKEN="<your-MCP_TOKEN>"
 python3 sync_images.py ./local-images
 ```
 
-需要按日期筛选时：
+To filter by date:
 
 ```bash
 python3 sync_images.py ./local-images --since 2026-01-01
 ```
 
-同步客户端带有明确的 User-Agent；若 Cloudflare 仍拒绝请求，应检查自己域名的访问控制。
+The sync client sends an explicit User-Agent. If Cloudflare still rejects requests, check the access controls on your domain.
 
-## 测试与开发
+## Testing and development
 
 ```bash
 python3 -m venv .venv
@@ -218,27 +216,27 @@ python3 -m venv .venv
 bash -n install.sh
 ```
 
-测试只使用合成图片、临时目录和假凭据，不调用 CPA、不消耗生图额度。覆盖图片原字节/缩放/格式、尺寸传递、发送完成后删除、错误/断连保留、签名篡改、到期、重复下载、响应头、清理范围保护、生命周期，以及配置生成/权限/备份/幂等性。[GitHub Actions 模板](examples/github-actions-tests.yml)可测试多个 Python 版本。模板默认不启用；需要时，使用具备 workflow 权限的 GitHub 授权，将其复制到 `.github/workflows/tests.yml` 后提交。
+Tests use only synthetic images, temporary directories, and fake credentials. They do not call CPA or consume generation quota. Coverage includes original image bytes, resizing and formats, dimension forwarding, deletion after a response finishes sending, retention on errors or disconnects, signature tampering, expiry, repeated downloads, response headers, cleanup boundary protection, lifecycle behavior, and configuration generation, permissions, backups, and idempotency. The [GitHub Actions template](examples/github-actions-tests.yml) supports testing multiple Python versions. It is not enabled by default. To enable it, use GitHub authorization with workflow permission, copy it to `.github/workflows/tests.yml`, and commit the file.
 
-目录结构：
+Project layout:
 
 ```text
-server.py                  MCP 工具、下载与清理
-install.sh                 systemd 安装入口
-scripts/configure_env.py   私有环境文件生成、检查和健康检查
+server.py                  MCP tools, downloads, and cleanup
+install.sh                 systemd installer
+scripts/configure_env.py   Private environment file generation, validation, and health checks
 cpa-image-mcp.service      systemd unit
-.env.example               空凭据模板
-sync_images.py             可选本机同步客户端
-tests/                     无真实凭据的隔离测试
-read.md                    简短复刻入口
+.env.example               Configuration template with empty credentials
+sync_images.py             Optional local sync client
+tests/                     Isolated tests without real credentials
+read.md                    Brief setup guide (Chinese)
 ```
 
-## 排错
+## Troubleshooting
 
-- `ensurepip` / venv 缺失：安装系统的 `python3-venv`，不要通过更换服务框架绕过。
-- 服务启动失败：在服务器本机执行 `journalctl -u cpa-image-mcp -n 50`。分享日志前自行移除敏感内容。
-- 原图链接失效：检查 `download_expires_at`、图片是否超过保留期，或是否被 `get_image` 默认删除。
-- 竖版尺寸不符：以返回的实际尺寸为准。本服务保留上游原图，不旋转或拉伸来伪造尺寸，也不会为试探而自动重复生图。
-- 大图超出 MCP 客户端体积限制：改用签名下载链接，或用 `max_side` / `format="jpeg"` 获取较小图片。
+- **Missing `ensurepip` / venv:** Install your distribution's `python3-venv` package rather than switching service frameworks to work around it.
+- **Service fails to start:** Run `journalctl -u cpa-image-mcp -n 50` on the server. Remove sensitive content before sharing logs.
+- **Original image link no longer works:** Check `download_expires_at`, whether the image has exceeded its retention period, and whether `get_image` deleted it by default.
+- **Portrait dimensions do not match:** Use the reported actual dimensions. The service preserves the upstream image; it does not rotate or stretch it to fake the requested dimensions, or automatically repeat generation to probe for a match.
+- **A large image exceeds the MCP client's size limit:** Use the signed download link, or request a smaller image with `max_side` / `format="jpeg"`.
 
-本项目依赖 [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)、[httpx](https://github.com/encode/httpx) 和 [Pillow](https://github.com/python-pillow/Pillow)。MIT 许可证见 [LICENSE](LICENSE)。
+This project depends on the [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk), [httpx](https://github.com/encode/httpx), and [Pillow](https://github.com/python-pillow/Pillow). See [LICENSE](LICENSE) for the MIT license.
