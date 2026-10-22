@@ -1,0 +1,4 @@
+mcp==1.30.0
+httpx>=0.27,<1
+pillow>=10,<13
+tzdata

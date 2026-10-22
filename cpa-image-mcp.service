@@ -1,0 +1,21 @@
+[Unit]
+Description=CPA image MCP server (for claude.ai custom connector)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=cpaimg
+Group=cpaimg
+WorkingDirectory=/opt/cpa-image-mcp
+EnvironmentFile=/etc/cpa-image-mcp.env
+ExecStart=/opt/cpa-image-mcp/venv/bin/python /opt/cpa-image-mcp/server.py
+Restart=always
+RestartSec=5
+StateDirectory=cpa-image-mcp
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
