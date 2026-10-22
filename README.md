@@ -1,5 +1,7 @@
 # CPA Image MCP
 
+**简体中文** | [English](README.en.md)
+
 把已运行的 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 图片接口包装成远程 MCP 服务，让 Claude 等云端客户端生成、编辑和下载原图。
 
 Remote MCP wrapper for your own CLIProxyAPI image endpoint: generation, editing, full-resolution image content, reusable signed downloads, and automatic retention cleanup.
